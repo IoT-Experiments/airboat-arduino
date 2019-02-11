@@ -15,7 +15,7 @@
 #define EEPROM_SCHEMA 0x01
 #define EEPROM_ADDRESS_SERVO_MIDDLE_POSITION 1
 
-#define SERVO_INTERVAL 25
+#define SERVO_MAX_DEVIATION 25
 #define SERVO_MIDDLE_POSITION_DEFAULT 90
 
 //#define DEBUG
@@ -35,9 +35,8 @@ void setup_eeprom();
 
 //////////
 
-int g_direction = 0;
-int g_motorSpeedPercent = 0;
-int g_stepperPercent = 50;
+int16_t g_throttleValue = 0;
+int16_t g_servoValue = 0;
 uint8_t g_servoAngle;
 uint8_t g_servoMiddlePosition;
 Servo g_servoCtrl;
@@ -105,7 +104,7 @@ void setup() {
 void loop() {
   // Wait connection
   if(Serial.available() > 0) {
-    String line = Serial.readString();
+    String line = Serial.readStringUntil('\n');
     DEBUG_PRINT("BLE serial RX: " + line);
 
     if(line.indexOf("OK+LOST") >= 0) {
@@ -120,12 +119,12 @@ void loop() {
       Serial.println("OK:CONN");
     } else if(line.indexOf("AT$TEST") >= 0) {
       Serial.println("OK:TEST_START");
-      g_servoCtrl.write(g_servoMiddlePosition - SERVO_INTERVAL);
+      g_servoCtrl.write(g_servoMiddlePosition - SERVO_MAX_DEVIATION);
       analogWrite(PIN_MOTOR_1A, 255);
       analogWrite(PIN_MOTOR_1B, LOW);
       delay(2000);
       //wdt_reset();
-      g_servoCtrl.write(g_servoMiddlePosition + SERVO_INTERVAL);
+      g_servoCtrl.write(g_servoMiddlePosition + SERVO_MAX_DEVIATION);
       analogWrite(PIN_MOTOR_1A, LOW);
       analogWrite(PIN_MOTOR_1B, 255);
       delay(2000);
@@ -137,33 +136,24 @@ void loop() {
     } else if(line.startsWith("AT$PARAMS:")) {
       // Remote AT command to change the parameters
       String parameters = line.substring(10);
-      // g_direction (-1/0/1) / motor speed / stepper (°)
-      if(sscanf(parameters.c_str(), "%d;%d;%d", &g_direction, &g_motorSpeedPercent, &g_stepperPercent) != EOF) {
-        switch(g_direction) {
-          case 1:
-            analogWrite(PIN_MOTOR_1A, round(g_motorSpeedPercent * 255 / 100l));
-            analogWrite(PIN_MOTOR_1B, LOW);
-            break;
-          case -1:
-            analogWrite(PIN_MOTOR_1A, LOW);
-            analogWrite(PIN_MOTOR_1B, round(g_motorSpeedPercent * 255 / 100l));
-            break;
-          default:
-          case 0:
+      // motor speed / stepper (°)
+      if(sscanf(parameters.c_str(), "%d;%d", &g_throttleValue, &g_servoValue) != EOF) {
+        if(g_throttleValue == 0) {
             analogWrite(PIN_MOTOR_1A, LOW);
             analogWrite(PIN_MOTOR_1B, LOW);
+        } else if(g_throttleValue > 0) {
+            analogWrite(PIN_MOTOR_1A, round(g_throttleValue / 100.0 * 255));
+            analogWrite(PIN_MOTOR_1B, LOW);
+        } else if(g_throttleValue < 0) {
+            analogWrite(PIN_MOTOR_1A, LOW);
+            analogWrite(PIN_MOTOR_1B, round(abs(g_throttleValue) / 100.0 * 255));
         }
 
-        float stepperAngle = SERVO_INTERVAL / 50.0 * g_stepperPercent + g_servoMiddlePosition - SERVO_INTERVAL;
+        float stepperAngle = g_servoMiddlePosition + SERVO_MAX_DEVIATION * g_servoValue / 100.0;
         DEBUG_PRINT(String("Angle: ") + stepperAngle);
 
-        g_servoAngle = (uint8_t)stepperAngle;
+        g_servoAngle = (uint8_t)round(stepperAngle);
         g_servoCtrl.write(g_servoAngle);
-        /*stepperAngle = round(stepperAngle);
-        if(g_servoAngle != stepperAngle) {
-          g_servoAngle = stepperAngle;
-          g_servoCtrl.write(g_servoAngle);
-        }*/
         Serial.println("OK");
       } else {
         Serial.println("ERR");
@@ -174,6 +164,8 @@ void loop() {
         g_servoMiddlePosition++;
       } else if(parameters == "-") {
         g_servoMiddlePosition--;
+      } else if(parameters == "R") {
+        g_servoMiddlePosition = SERVO_MIDDLE_POSITION_DEFAULT;
       }
       EEPROM.write(EEPROM_ADDRESS_SERVO_MIDDLE_POSITION, g_servoMiddlePosition);
       g_servoAngle = g_servoMiddlePosition;
